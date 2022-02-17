@@ -1,0 +1,58 @@
+# ci/cd based on https://trailhead.salesforce.com/content/learn/projects/automate-cicd-with-gitlab
+image: drawatirvine30/pmdlib:1.2
+
+pipelines:
+  pull-requests:
+    '**': #this runs as default for any branch not elsewhere defined
+      - step:
+          name: PMD Check
+          caches: 
+            - pmd
+          script:
+            # Check PMD Version 
+            - chmod +x pmd-scan/pmd-scan-with-results.sh
+            - pmd-scan/pmd-scan-with-results.sh
+            
+            # pipe to extract PMD results file and stored it on Bitbucket repo Download Section
+            - pipe: atlassian/bitbucket-upload-file:0.3.2
+              variables:
+                BITBUCKET_USERNAME: $BITBUCKET_USERNAME
+                BITBUCKET_APP_PASSWORD: $BITBUCKET_APP_PASSWORD
+                FILENAME: '*.html'
+
+          after-script:
+            - echo "all done."
+#      - step:
+#          name: sfdx update
+#          caches:
+#           - sfdx
+#          script:
+           # Output CLI version and plug-in information
+#           - sfdx update
+           # Configure variables
+#           - export DEPLOYID=""
+    feature/*: #any branch with a feature prefix
+      - step:
+          name: Validate in SIT # Validates a build with no tests in SIT
+          deployment: SIT
+          script:
+          # Decrypt server key
+          - openssl enc -aes-256-cbc -md sha256 -salt -d -in assets/server.key.enc -out assets/server.key -k $SERVER_KEY_PASSWORD
+          # Create Salesforce files in metadata api format in src folder
+          - sfdx force:source:convert --outputdir src
+          # Authenticate to the Dev Hub using the server key
+          - sfdx force:auth:jwt:grant --clientid $SF_CONSUMER_KEY --jwtkeyfile assets/server.key --username $SF_USERNAME --instanceurl $SF_URL
+          # Validate package
+          - DEPLOYID="$(sfdx force:mdapi:deploy --verbose --checkonly --testlevel NoTestRun --deploydir src --targetusername $SF_USERNAME --json | jq '.result.id' | tr -d '"')"
+          - echo "Deployment Id - "${DEPLOYID}
+          - pipe: atlassian/slack-notify:0.3.4
+            variables:
+              WEBHOOK_URL: $WEBHOOK_URL
+              MESSAGE: 'DeploymentID $DEPLOYID validating on $BITBUCKET_DEPLOYMENT_ENVIRONMENT from $BITBUCKET_BRANCH branch as $SF_USERNAME.'
+          - sfdx force:mdapi:deploy:report --verbose --wait=10 --DEPLOYID=${DEPLOYID} --targetusername=$SF_USERNAME
+   
+definitions:
+  caches:
+    pmd: /usr/local/pmd
+#    sfdx: /usr/local/sfdx
+
